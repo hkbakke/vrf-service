@@ -1,0 +1,45 @@
+#!/bin/bash
+
+UNIT="$1"
+VRF="$2"
+OVERRIDE_DIR="/etc/systemd/system/$(basename "${UNIT}").d"
+OVERRIDE="${OVERRIDE_DIR}/override.conf"
+KEYWORD=""
+TMPFILE=$(mktemp)
+
+
+# Ensure tmpfile is cleaned up regardless of script success
+trap 'rm ${TMPFILE}' EXIT
+
+if [[ -z $1 ]] || [[ -z $2 ]]
+then
+    >&2 echo "Usage: $0 SYSTEMD_UNIT_FILE VRF"
+    exit 2
+fi
+
+if [[ ! -d ${OVERRIDE_DIR} ]]
+then
+    mkdir "${OVERRIDE_DIR}"
+fi
+
+{
+    echo "[Service]"
+
+    while read -r line
+    do
+        [[ "${line}" =~ ^(Exec.+)?=(.+)$ ]]
+        if [[ "${KEYWORD}" != "${BASH_REMATCH[1]}" ]]
+        then
+            echo "${BASH_REMATCH[1]}="
+        fi
+        KEYWORD="${BASH_REMATCH[1]}"
+        echo "${BASH_REMATCH[1]}=/sbin/ip vrf exec ${VRF} ${BASH_REMATCH[2]}"
+    done <<< "$(grep '^Exec' "${UNIT}")"
+} > "${TMPFILE}"
+
+if [[ ! -f ${OVERRIDE} ]] || ! diff "${TMPFILE}" "${OVERRIDE}"
+then
+    cp "${TMPFILE}" "${OVERRIDE}"
+    systemctl daemon-reload
+    systemctl restart "$(basename "${UNIT}")"
+fi
