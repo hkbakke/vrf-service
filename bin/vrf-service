@@ -1,52 +1,104 @@
 #!/bin/bash
+
 set -e
 
-UNIT="$1"
-VRF="$2"
-OVERRIDE_DIR="/etc/systemd/system/$(basename "${UNIT}").d"
-OVERRIDE="${OVERRIDE_DIR}/override.conf"
-TMPFILE=$(mktemp)
+print_usage () {
+    >&2 echo "Usage: $0 [-v VRF] [-t] UNIT_FILE..."
+}
 
+add_override () {
+    # Check if the VRF exists
+    ip vrf show "${VRF}" > /dev/null || exit 1
 
-# Ensure tmpfile is cleaned up regardless of script success
-trap 'rm ${TMPFILE}' EXIT
+    [[ -d ${override_dir} ]] || mkdir "${override_dir}"
+    tmpfile=$(mktemp -p "${tmpdir}")
 
-if [[ -z $1 ]] || [[ -z $2 ]]
+    {
+        echo "[Service]"
+
+        keyword=""
+        while read -r line
+        do
+            [[ "${line}" =~ ^(Exec.+)?=(.+)$ ]]
+            if [[ "${keyword}" != "${BASH_REMATCH[1]}" ]]
+            then
+                echo "${BASH_REMATCH[1]}="
+            fi
+            keyword="${BASH_REMATCH[1]}"
+            echo "${BASH_REMATCH[1]}=/sbin/ip vrf exec ${VRF} ${BASH_REMATCH[2]}"
+        done <<< "$(grep '^Exec' "${unit_file}")"
+    } > "${tmpfile}"
+
+    if ! diff -N "${override}" "${tmpfile}"
+    then
+        ${TEST} && exit 1
+        mv "${tmpfile}" "${override}"
+        systemctl daemon-reload
+        systemctl restart "$(basename "${unit_file}")"
+    fi
+}
+
+remove_override () {
+    diff -N "${override}" /dev/null || true
+    ${TEST} && exit 1
+    rm -r "${override_dir}"
+    systemctl daemon-reload
+    systemctl restart "$(basename "${unit_file}")"
+}
+
+VRF=""
+TEST=false
+
+while getopts ":v:t" opt
+do
+    case ${opt} in
+        v)
+            VRF="${OPTARG}"
+            ;;
+        t)
+            TEST=true
+            ;;
+        \?)
+            print_usage
+            exit 2
+            ;;
+    esac
+done
+
+shift $((OPTIND - 1))
+
+# Ensure one or more unit files are provided
+if [[ $# -lt 1 ]]
 then
-    >&2 echo "Usage: $0 SYSTEMD_UNIT_FILE VRF"
+    print_usage
     exit 2
 fi
 
-# Check if the VRF exists
-if ! ip vrf show "${VRF}" > /dev/null
-then
-    exit 1
-fi
+tmpdir=$(mktemp -d)
+# Ensure temporary files is cleaned up regardless of script success
+trap 'rm -r ${tmpdir}' EXIT
 
-if [[ ! -d ${OVERRIDE_DIR} ]]
-then
-    mkdir "${OVERRIDE_DIR}"
-fi
+for unit_file in "$@"
+do
+    if [[ ! -f ${unit_file} ]]
+    then
+        >&2 printf "The unit file '%s' does not exist\\n" "${unit_file}"
+        exit 1
+    fi
 
-{
-    echo "[Service]"
+    override_dir="/etc/systemd/system/$(basename "${unit_file}").d"
+    override="${override_dir}/override.conf"
 
-    KEYWORD=""
-    while read -r line
-    do
-        [[ "${line}" =~ ^(Exec.+)?=(.+)$ ]]
-        if [[ "${KEYWORD}" != "${BASH_REMATCH[1]}" ]]
-        then
-            echo "${BASH_REMATCH[1]}="
-        fi
-        KEYWORD="${BASH_REMATCH[1]}"
-        echo "${BASH_REMATCH[1]}=/sbin/ip vrf exec ${VRF} ${BASH_REMATCH[2]}"
-    done <<< "$(grep '^Exec' "${UNIT}")"
-} > "${TMPFILE}"
+    # Verify that the provided VRF exists on this system. If no VRF is provided
+    # remove the override configuration.
+    if [[ -z ${VRF} ]]
+    then
+        [[ -f ${override} ]] && remove_override
+    else
+        add_override
+    fi
+done
 
-if [[ ! -f ${OVERRIDE} ]] || ! diff "${TMPFILE}" "${OVERRIDE}"
-then
-    cp "${TMPFILE}" "${OVERRIDE}"
-    systemctl daemon-reload
-    systemctl restart "$(basename "${UNIT}")"
-fi
+# Exit with explicit exit code to avoid exiting with the exit code of the
+# override file test if VRF is empty and no override file exists.
+exit 0
