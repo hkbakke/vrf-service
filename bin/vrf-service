@@ -1,10 +1,10 @@
 #!/bin/bash
+set -e
 
 UNIT="$1"
 VRF="$2"
 OVERRIDE_DIR="/etc/systemd/system/$(basename "${UNIT}").d"
 OVERRIDE="${OVERRIDE_DIR}/override.conf"
-KEYWORD=""
 TMPFILE=$(mktemp)
 
 
@@ -17,6 +17,12 @@ then
     exit 2
 fi
 
+# Check if the VRF exists
+if ! ip vrf show "${VRF}" > /dev/null
+then
+    exit 1
+fi
+
 if [[ ! -d ${OVERRIDE_DIR} ]]
 then
     mkdir "${OVERRIDE_DIR}"
@@ -25,6 +31,7 @@ fi
 {
     echo "[Service]"
 
+    KEYWORD=""
     while read -r line
     do
         [[ "${line}" =~ ^(Exec.+)?=(.+)$ ]]
