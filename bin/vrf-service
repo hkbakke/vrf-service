@@ -3,7 +3,7 @@
 set -e
 
 print_usage () {
-    >&2 echo "Usage: $0 [-v VRF] [-t] UNIT_FILE..."
+    >&2 echo "Usage: $0 [-t] VRF UNIT_FILE..."
 }
 
 add_override () {
@@ -46,15 +46,11 @@ remove_override () {
     systemctl restart "$(basename "${unit_file}")"
 }
 
-VRF=""
 TEST=false
 
-while getopts ":v:t" opt
+while getopts ":t" opt
 do
     case ${opt} in
-        v)
-            VRF="${OPTARG}"
-            ;;
         t)
             TEST=true
             ;;
@@ -65,14 +61,18 @@ do
     esac
 done
 
-shift $((OPTIND - 1))
+shift "$((OPTIND - 1))"
 
 # Ensure one or more unit files are provided
-if [[ $# -lt 1 ]]
+if [[ $# -lt 2 ]]
 then
     print_usage
     exit 2
 fi
+
+# The first mandatory argument is the VRF, followed by a list of unit files
+VRF="$1"
+shift
 
 tmpdir=$(mktemp -d)
 # Ensure temporary files is cleaned up regardless of script success
@@ -89,9 +89,9 @@ do
     override_dir="/etc/systemd/system/$(basename "${unit_file}").d"
     override="${override_dir}/override.conf"
 
-    # Verify that the provided VRF exists on this system. If no VRF is provided
-    # remove the override configuration.
-    if [[ -z ${VRF} ]]
+    # If no VRF is provided or the VRF name is `default`, remove the VRF
+    # override configuration.
+    if [[ "${VRF}" == "default" ]]
     then
         [[ -f ${override} ]] && remove_override
     else
