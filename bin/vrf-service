@@ -2,13 +2,25 @@
 
 set -e
 
+TEST=false
+RESTART=true
+
 print_usage () {
-    >&2 echo "Usage: $0 [-t] VRF UNIT_FILE..."
+    >&2 echo "Usage: $0 [-n] [-t] VRF UNIT_FILE..."
+}
+
+restart_service () {
+    systemctl daemon-reload
+
+    if ${RESTART}
+    then
+        systemctl restart "${service}"
+    fi
 }
 
 add_override () {
     # Check if the VRF exists
-    ip vrf show "${VRF}" > /dev/null || exit 1
+    ip vrf show "${vrf}" > /dev/null || exit 1
 
     [[ -d ${override_dir} ]] || mkdir "${override_dir}"
     tmpfile=$(mktemp -p "${tmpdir}")
@@ -25,7 +37,7 @@ add_override () {
                 echo "${BASH_REMATCH[1]}="
             fi
             keyword="${BASH_REMATCH[1]}"
-            echo "${BASH_REMATCH[1]}=/sbin/ip vrf exec ${VRF} ${BASH_REMATCH[2]}"
+            echo "${BASH_REMATCH[1]}=$(command -v ip) vrf exec ${vrf} ${BASH_REMATCH[2]}"
         done <<< "$(grep '^Exec' "${unit_file}")"
     } > "${tmpfile}"
 
@@ -33,8 +45,7 @@ add_override () {
     then
         ${TEST} && exit 1
         mv "${tmpfile}" "${override}"
-        systemctl daemon-reload
-        systemctl restart "$(basename "${unit_file}")"
+        restart_service
     fi
 }
 
@@ -42,15 +53,15 @@ remove_override () {
     diff -N "${override}" /dev/null || true
     ${TEST} && exit 1
     rm -r "${override_dir}"
-    systemctl daemon-reload
-    systemctl restart "$(basename "${unit_file}")"
+    restart_service
 }
 
-TEST=false
-
-while getopts ":t" opt
+while getopts ":nt" opt
 do
     case ${opt} in
+        n)
+            RESTART=false
+            ;;
         t)
             TEST=true
             ;;
@@ -71,7 +82,7 @@ then
 fi
 
 # The first mandatory argument is the VRF, followed by a list of unit files
-VRF="$1"
+vrf="$1"
 shift
 
 tmpdir=$(mktemp -d)
@@ -86,12 +97,13 @@ do
         exit 1
     fi
 
-    override_dir="/etc/systemd/system/$(basename "${unit_file}").d"
+    service=$(basename "${unit_file}")
+    override_dir="/etc/systemd/system/${service}.d"
     override="${override_dir}/override.conf"
 
     # If no VRF is provided or the VRF name is `default`, remove the VRF
     # override configuration.
-    if [[ "${VRF}" == "default" ]]
+    if [[ "${vrf}" == "default" ]]
     then
         [[ -f ${override} ]] && remove_override
     else
